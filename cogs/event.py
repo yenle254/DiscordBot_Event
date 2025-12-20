@@ -2,16 +2,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import datetime
+import asyncio
 
-# 1. Giao diện bảng nhập tên (Modal)
+# --- 1. MODAL ĐIỀN USERNAME (NGƯỜI CHƠI) ---
 class RegistrationModal(discord.ui.Modal):
-    title = "Đăng ký tham gia sự kiện"
-
-    name_input = discord.ui.TextInput(
-        label="Họ và tên của bạn",
-        placeholder="Nhập tên thật hoặc nickname...",
-        min_length=2,
-        max_length=50
+    title = "Event Registration"
+    username_input = discord.ui.TextInput(
+        label="Your username",
+        placeholder="Enter your display username...",
+        min_length=2, max_length=30
     )
 
     def __init__(self, view, start_time):
@@ -20,89 +19,194 @@ class RegistrationModal(discord.ui.Modal):
         self.start_time = start_time
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
         user = interaction.user
-        
-        # Kiểm tra nếu đã đủ người hoặc đã đăng ký
         if user.id in self.view.participants:
-            return await interaction.response.send_message("Bạn đã đăng ký rồi!", ephemeral=True)
+            return await interaction.followup.send("You have already joined!", ephemeral=True)
+
+        self.view.participants[user.id] = self.username_input.value
+        await self.view.update_message(interaction.message)
         
-        if len(self.view.participants) >= 8:
-            return await interaction.response.send_message("Sự kiện đã đủ 8 người!", ephemeral=True)
+        await interaction.followup.send(f"✅ {self.username_input.value} has been added!", ephemeral=True)
 
-        # Lưu thông tin
-        self.view.participants[user.id] = self.name_input.value
-        count = len(self.view.participants)
-
-        await interaction.response.send_message(f"✅ Đã ghi danh {self.name_input.value} ({count}/8)", ephemeral=True)
-
-        # Gửi tin nhắn riêng (DM) kèm đếm ngược
         timestamp = int(self.start_time.timestamp())
         try:
-            embed_dm = discord.Embed(title="Xác nhận đăng ký thành công", color=discord.Color.green())
-            embed_dm.description = (
-                f"Sự kiện: **{self.view.event_title}**\n"
-                f"Thời gian bắt đầu: <t:{timestamp}:F>\n"
-                f"Đếm ngược: <t:{timestamp}:R> ⏳"
+            await user.send(
+                f"📅 **Registration confirmed!**\n\n"
+                f"Event: **{self.view.event_title}**\n"
+                f"Start time: <t:{timestamp}:F>\n"
+                f"⏳ **Countdown: <t:{timestamp}:R>**"
             )
-            await user.send(embed=embed_dm)
         except:
-            await interaction.followup.send("Lưu ý: Bot không thể gửi DM cho bạn (hãy mở DM trong cài đặt server).", ephemeral=True)
+            pass
 
-        # Cập nhật tin nhắn gốc
-        await self.view.update_message(interaction.message)
-
-# 2. Giao diện nút bấm (View)
+# --- 2. EVENT VIEW (GIAO DIỆN CHÍNH) ---
 class EventView(discord.ui.View):
-    def __init__(self, title, start_time):
+    def __init__(self, title, event_type, start_time, host_id):
         super().__init__(timeout=None)
         self.event_title = title
+        self.event_type = event_type
         self.start_time = start_time
-        self.participants = {} # {id: name}
+        self.host_id = host_id
+        self.participants = {}
+        self.is_closed = False
 
-    @discord.ui.button(label="Tham gia (0/8)", style=discord.ButtonStyle.primary)
+    def create_embed(self):
+        status = "CLOSED" if self.is_closed else "OPEN"
+        color = 0xe74c3c if self.is_closed else 0x2ecc71
+        embed = discord.Embed(title=f"--❤[ {self.event_title} ]❤--", color=color)
+        
+        desc = (
+            f"✨ **Status**: {status}\n"
+            f"☁ **Type**: {self.event_type}\n"
+            f"👥 **Players**: {len(self.participants)}/8\n\n"
+            f"📜 **Player List**:\n"
+        )
+        if not self.participants:
+            desc += "Join or leave anytime"
+        else:
+            for i, (uid, name) in enumerate(self.participants.items(), 1):
+                desc += f"{i}. <@{uid}> ({name})\n"
+
+        embed.description = desc
+        embed.set_footer(text=f"Starts at: {self.start_time.strftime('%d/%m/%Y %H:%M')}")
+        return embed
+
+    @discord.ui.button(label="Join Run", style=discord.ButtonStyle.success)
     async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if len(self.participants) >= 8:
-            button.disabled = True
-            button.label = "Đã đủ người"
-            await interaction.message.edit(view=self)
-            return await interaction.response.send_message("Sự kiện đã đầy!", ephemeral=True)
-
+        if self.is_closed or len(self.participants) >= 8:
+            return await interaction.response.send_message("You cannot join this event.", ephemeral=True)
         await interaction.response.send_modal(RegistrationModal(self, self.start_time))
 
-    async def update_message(self, message):
-        count = len(self.participants)
-        list_names = "\n".join([f"- {name}" for name in self.participants.values()])
+    @discord.ui.button(label="Leave Run", style=discord.ButtonStyle.danger)
+    async def leave_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.participants:
+            return await interaction.response.send_message("You are not participating.", ephemeral=True)
         
-        embed = message.embeds[0]
-        embed.set_field_at(0, name=f"Danh sách tham gia ({count}/8)", value=list_names or "Chưa có ai", inline=False)
+        del self.participants[interaction.user.id]
+        await interaction.response.send_message("You have left the event.", ephemeral=True)
+        await self.update_message(interaction.message)
+
+    @discord.ui.button(label="Close Run", style=discord.ButtonStyle.secondary)
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.host_id:
+            return await interaction.response.send_message("Only the host can close this event.", ephemeral=True)
         
-        # Cập nhật nút bấm
+        self.is_closed = True
         for item in self.children:
             if isinstance(item, discord.ui.Button):
-                item.label = f"Tham gia ({count}/8)"
-                if count >= 8:
-                    item.disabled = True
-                    item.label = "Sự kiện đã đầy"
-                    item.style = discord.ButtonStyle.danger
+                item.disabled = True
+        await interaction.response.edit_message(embed=self.create_embed(), view=self)
 
-        await message.edit(embed=embed, view=self)
+    async def update_message(self, message):
+        await message.edit(embed=self.create_embed(), view=self)
 
-# 3. Class Cog chứa lệnh
+# --- 3. MODAL NHẬP THỜI GIAN (DÀNH CHO HOST) ---
+class TimeInputModal(discord.ui.Modal, title="Set event start time"):
+    date_str = discord.ui.TextInput(
+        label="Start date (DD/MM/YYYY)",
+        min_length=8, max_length=10
+    )
+    time_str = discord.ui.TextInput(
+        label="Start time (HH:mm)",
+        placeholder="Example: 23:00",
+        min_length=4, max_length=5
+    )
+
+    def __init__(self, title, event_type, host_id, cog):
+        super().__init__()
+        self.event_title = title
+        self.event_type = event_type
+        self.host_id = host_id
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            full_date_str = f"{self.date_str.value} {self.time_str.value.replace('.', ':')}"
+            start_time = datetime.datetime.strptime(full_date_str, "%d/%m/%Y %H:%M")
+            
+            if start_time < datetime.datetime.now():
+                return await interaction.followup.send(
+                    "❌ The selected time cannot be in the past.",
+                    ephemeral=True
+                )
+
+            view = EventView(self.event_title, self.event_type, start_time, self.host_id)
+            
+            await interaction.edit_original_response(
+                content="✅ Event created successfully!",
+                view=None
+            )
+
+            if isinstance(interaction.channel, discord.TextChannel):
+                await interaction.channel.send(embed=view.create_embed(), view=view)
+            else:
+                await interaction.followup.send(embed=view.create_embed(), view=view)
+
+            asyncio.create_task(self.cog.wait_for_start(self.event_title, start_time, view))
+
+        except ValueError:
+            await interaction.followup.send(
+                "❌ Invalid format! (Date: 20/12/2025 | Time: 23:00)",
+                ephemeral=True
+            )
+
+class SetupView(discord.ui.View):
+    def __init__(self, title, event_type, host_id, cog):
+        super().__init__(timeout=60)
+        self.title = title
+        self.event_type = event_type
+        self.host_id = host_id
+        self.cog = cog
+
+    @discord.ui.button(label="Click to set time", style=discord.ButtonStyle.primary)
+    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(
+            TimeInputModal(self.title, self.event_type, self.host_id, self.cog)
+        )
+
+# --- 4. COG ---
 class EventCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="event", description="Tạo sự kiện mới giới hạn 8 người")
-    @app_commands.describe(title="Tên sự kiện", minutes="Số phút nữa sẽ bắt đầu")
-    async def event(self, interaction: discord.Interaction, title: str, minutes: int):
-        start_time = datetime.datetime.now() + datetime.timedelta(minutes=minutes)
-        view = EventView(title, start_time)
-        
-        embed = discord.Embed(title=f"🏆 {title}", color=discord.Color.gold())
-        embed.add_field(name="Danh sách tham gia (0/8)", value="Chưa có ai", inline=False)
-        embed.set_footer(text=f"Bắt đầu lúc: {start_time.strftime('%H:%M - %d/%m/%Y')}")
+    async def wait_for_start(self, title, start_time, view):
+        while True:
+            now = datetime.datetime.now()
+            delay = (start_time - now).total_seconds()
+            if delay <= 0:
+                break
+            await asyncio.sleep(min(delay, 60))
 
-        await interaction.response.send_message(embed=embed, view=view)
+        for uid, name in view.participants.items():
+            try:
+                user = await self.bot.fetch_user(uid)
+                await user.send(
+                    f"🚀 **{title}** ({view.event_type}) has started! "
+                    f"Let’s go **{name}**!"
+                )
+            except:
+                pass
+
+    @app_commands.command(name="event", description="Create a new event")
+    @app_commands.choices(event_type=[
+        app_commands.Choice(name="Long-run", value="Long-run"),
+        app_commands.Choice(name="Casual-run", value="Casual-run")
+    ])
+    async def event(
+        self,
+        interaction: discord.Interaction,
+        title: str,
+        event_type: app_commands.Choice[str]
+    ):
+        view = SetupView(title, event_type.value, interaction.user.id, self)
+        await interaction.response.send_message(
+            f"⚙ **Event setup:** {title}\n*Type: {event_type.name}*",
+            view=view,
+            ephemeral=True
+        )
 
 async def setup(bot):
     await bot.add_cog(EventCog(bot))
