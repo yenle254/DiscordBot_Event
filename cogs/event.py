@@ -4,7 +4,7 @@ from discord.ext import commands
 import datetime
 import asyncio
 
-# --- 1. MODAL ĐIỀN USERNAME (NGƯỜI CHƠI) ---
+# MODAL ĐIỀN USERNAME (NGƯỜI CHƠI) 
 class RegistrationModal(discord.ui.Modal):
     title = "Event Registration"
     username_input = discord.ui.TextInput(
@@ -41,7 +41,7 @@ class RegistrationModal(discord.ui.Modal):
         except:
             pass
 
-# --- 2. EVENT VIEW (GIAO DIỆN CHÍNH) ---
+# EVENT VIEW (GIAO DIỆN CHÍNH) 
 class EventView(discord.ui.View):
     def __init__(self, title, event_type, start_time, host_id):
         super().__init__(timeout=None)
@@ -102,14 +102,14 @@ class EventView(discord.ui.View):
     async def update_message(self, message):
         await message.edit(embed=self.create_embed(), view=self)
 
-# --- 3. MODAL NHẬP THỜI GIAN (DÀNH CHO HOST) ---
+# MODAL NHẬP THỜI GIAN (DÀNH CHO HOST)
 class TimeInputModal(discord.ui.Modal, title="Set event start time"):
     date_str = discord.ui.TextInput(
         label="Start date (DD/MM/YYYY)",
         min_length=8, max_length=10
     )
     time_str = discord.ui.TextInput(
-        label="Start time (HH:mm)",
+        label="Start time (hh:mm)",
         placeholder="Example: 23:00",
         min_length=4, max_length=5
     )
@@ -167,7 +167,7 @@ class SetupView(discord.ui.View):
             TimeInputModal(self.title, self.event_type, self.host_id, self.cog)
         )
 
-# --- 4. COG ---
+# COG
 class EventCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
