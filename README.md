@@ -1,0 +1,4 @@
+1. python -m venv venv
+2. venv\Scripts\activate
+3. pip install discord.py python-dotenv
+4. python main.py
